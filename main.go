@@ -124,7 +124,12 @@ func GetIPPublic() string {
 	}
 
 	fmt.Println("WAN IP Address is a public IP Address:", wanIp)
-
+	//close the browser
+	err = wd.Quit()
+	if err != nil {
+		fmt.Println("Error closing the browser:", err)
+		return ""
+	}
 	var IpSplit []string
 	IpSplit = strings.Split(wanIp, "/")
 	return IpSplit[0]
