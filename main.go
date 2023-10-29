@@ -5,61 +5,315 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"get-public-ip-indihome/libraries/logger"
+	"get-public-ip-indihome/middleware"
+	"github.com/gin-gonic/gin"
 	"github.com/go-co-op/gocron"
+	cors "github.com/itsjamie/gin-cors"
+	"github.com/sirupsen/logrus"
 	"github.com/tebeka/selenium"
 	"github.com/tebeka/selenium/chrome"
 	"io/ioutil"
 	"net/http"
+	"os"
+	"os/exec"
 	"strconv"
 	"strings"
 	"time"
 )
+
+var routerURL = "http://192.168.x.x"
+var routerAdmin = "xxxxxxxxxx"
+var routerPassword = "xxxxxxxxxxxx"
+
+var emailCloudFare = "xxxxxxxx@gmail.com"
+var apiKeyCloudFare = "xxxxxxxxxxxx"
+
+var dnsRecordNameCloudFare = "xxxxx.my.id"
+
+var zoneIDCloudFare = "xxxxxxxxxxxxx"
 
 func cronJob() {
 	loc, _ := time.LoadLocation("Asia/Jakarta")
 	s := gocron.NewScheduler(loc)
 	//downloadTrivyDB() every day at 12:00 AM
 	go func() {
-		s.Every(10).Minute().Do(func() {
-			IPPublic := GetIPPublic()
-			if IPPublic != "" {
-				updateDNSRecordCloudFare(IPPublic)
-			}
-		})
+		s.Every(10).Minute().Do(triggerCronRefreshIp)
 	}()
-
 	s.StartAsync()
 }
 
-func main() {
-	// Start the cron job
-	cronJob()
+func triggerCronRefreshIp() {
+	IPPublic := GetIPPublic()
+	if IPPublic != "" {
+		updateDNSRecordCloudFare(IPPublic)
+	}
+}
 
-	// to run the function without cron (HTTP API)
-	http.HandleFunc("/do-refresh", func(w http.ResponseWriter, r *http.Request) {
+var route *gin.Engine
+
+func init() {
+	//gin.SetMode(gin.ReleaseMode)
+	// Initialize logger
+
+	//setup main routes
+	route = gin.New()
+	route.Use(cors.Middleware(cors.Config{
+		Origins:         "*",
+		Methods:         "GET, PUT, POST, DELETE, OPTIONS",
+		RequestHeaders:  "Origin, Authorization, Content-Type",
+		ExposedHeaders:  "",
+		MaxAge:          50 * time.Second,
+		ValidateHeaders: false,
+	}))
+	route.Use(middleware.ErrorHandler())
+	route.Use(middleware.JSONMiddleware())
+	route.GET("/", func(c *gin.Context) {
+		c.JSON(http.StatusOK, gin.H{"data": "this is app to set the public IP Address to the DNS record"})
+	})
+
+	route.GET("/do-refresh", func(c *gin.Context) {
 		// Start a Selenium WebDriver server instance
 		IPPublic := GetIPPublic()
 		if IPPublic != "" {
 			updateDNSRecordCloudFare(IPPublic)
 		}
+
+		c.JSON(http.StatusOK, gin.H{"status": "OK"})
+	})
+	route.GET("/health_check", func(c *gin.Context) {
+		c.JSON(http.StatusOK, gin.H{"status": "OK"})
 	})
 
-	http.ListenAndServe(":8080", nil)
-	fmt.Println("Server started on port 8080")
+	route.GET("/update-various-dns-record", func(c *gin.Context) {
+		//get from the query parameter
+		query := c.Request.URL.Query()
+		//get the dns record name
+		dnsRecordName := query.Get("dnsRecordName")
+		if dnsRecordName != "" {
+			dnsRecordNameCloudFare = dnsRecordName
+		}
+		//get the zone ID
+		zoneID := query.Get("zoneID")
+		if zoneID != "" {
+			zoneIDCloudFare = zoneID
+		}
+		//get the email
+		email := query.Get("email")
+		if email != "" {
+			emailCloudFare = email
+		}
+		//get the API Key
+		apiKey := query.Get("apiKey")
+		if apiKey != "" {
+			apiKeyCloudFare = apiKey
+		}
+		//get the router URL
+		routerURLParam := query.Get("routerURL")
+		if routerURLParam != "" {
+			routerURL = routerURLParam
+		}
+		//get the router admin
+		routerAdminParam := query.Get("routerAdmin")
+		if routerAdmin != "" {
+			routerAdmin = routerAdminParam
+		}
+		//get the router password
+		routerPasswordParam := query.Get("routerPassword")
+		if routerPassword != "" {
+			routerPassword = routerPasswordParam
+		}
 
-	// Start a Selenium WebDriver server instance
-	IPPublic := GetIPPublic()
-	updateDNSRecordCloudFare(IPPublic)
+		c.JSON(http.StatusOK, gin.H{"status": "OK"})
+	})
+
+	// Handler if no route define
+	route.NoRoute(func(c *gin.Context) {
+		c.JSON(http.StatusNotFound, "Page not found")
+	})
+
+}
+func main() {
+	// Start the cron job
+
+	//install dependencies
+	//clone the repository
+	// clone https://github.com/tebeka/selenium
+
+	tebekaCloneRepository := "https://github.com/tebeka/selenium"
+	Pwd, err := os.Getwd()
+	if err != nil {
+		logger.SetLogConsole(logger.LogData{
+			Message: "Error getting the current working directory",
+			CustomFields: logrus.Fields{
+				"data": err,
+			},
+			Level: "ERROR",
+		})
+		return
+	}
+
+	tebekaCloneRepositoryPath := Pwd + "/selenium"
+	tebekaCloneRepositoryBranch := "master"
+
+	// clone
+	err = cloneRepository(tebekaCloneRepository, tebekaCloneRepositoryPath, tebekaCloneRepositoryBranch)
+	if err != nil {
+		logger.SetLogConsole(logger.LogData{
+			Message: "Error cloning the repository",
+			CustomFields: logrus.Fields{
+				"data": err,
+			},
+			Level: "ERROR",
+		})
+		return
+	}
+
+	//check if dependencies is installed
+	err = installDependencies(tebekaCloneRepositoryPath)
+	if err != nil {
+		logger.SetLogConsole(logger.LogData{
+			Message: "Error installing the dependencies",
+			CustomFields: logrus.Fields{
+				"data": err,
+			},
+			Level: "ERROR",
+		})
+		return
+	}
+
+	cronJob()
+
+	logger.SetLogConsole(logger.LogData{
+		Message: "Server started successfully on port 1000",
+		Level:   "INFO",
+	})
+	err = http.ListenAndServe("0.0.0.0:1000", limit(route))
+	if err != nil {
+		logger.SetLogConsole(logger.LogData{
+			Message: "Error starting the server",
+			CustomFields: logrus.Fields{
+				"data": err,
+			},
+			Level: "ERROR",
+		})
+		return
+	}
+
+	//
+	//// Start a Selenium WebDriver server instance
+	//IPPublic := GetIPPublic()
+	//updateDNSRecordCloudFare(IPPublic)
+
+}
+
+func installDependencies(tebekaCloneRepositoryPath string) error {
+
+	//go run init.go --alsologtostderr  --download_browsers --download_latest
+	dependenciesDir := tebekaCloneRepositoryPath + "/vendor"
+	//check if the directory is exist so we dont need to install the dependencies
+	//install the dependencies
+	cmd := exec.Command("go", "run", "init.go", "--alsologtostderr", "--download_browsers", "--download_latest")
+	cmd.Dir = dependenciesDir
+	err := cmd.Run()
+	if err != nil {
+		return err
+	}
+	logger.SetLogConsole(logger.LogData{
+		Message: "Dependencies installed successfully",
+		Level:   "INFO",
+	})
+	return nil
+
+}
+
+func cloneRepository(repository string, path string, branch string) error {
+
+	//clone the repository
+	//clone
+
+	//create the directory from pwd+/selenium
+	pwd, err := os.Getwd()
+	if err != nil {
+		return err
+	}
+	path = pwd + "/selenium"
+	//check if the directory is exist
+	if _, err := os.Stat(path); os.IsExist(err) {
+		//return because the directory is already exist
+		logger.SetLogConsole(logger.LogData{
+			Message: "Directory is already exist",
+			Level:   "INFO",
+		})
+		return nil
+	}
+
+	//check if the directory is empty
+	//dont clone if the directory is not empty
+	files, err := ioutil.ReadDir(path)
+	if err != nil {
+		return err
+	}
+	if len(files) > 0 {
+		logger.SetLogConsole(logger.LogData{
+			Message: "Directory is not empty, no need to clone the repository",
+			Level:   "INFO",
+		})
+		return nil
+	}
+
+	//clone the repository
+	cmd := exec.Command("git", "clone", repository, path)
+	err = cmd.Run()
+	if err != nil {
+		return err
+	}
+
+	//checkout to the branch
+	cmd = exec.Command("git", "checkout", branch)
+	err = cmd.Run()
+	if err != nil {
+		return err
+	}
+	logger.SetLogConsole(logger.LogData{
+		Message: "Repository cloned successfully",
+		Level:   "INFO",
+	})
+	return nil
 
 }
 
 func GetIPPublic() string {
 	selenium.SetDebug(false)
 	// Start a Selenium WebDriver with headless Chrome
-	fmt.Println("Starting Selenium WebDriver")
-	service, err := selenium.NewChromeDriverService("/usr/bin/chromedriver", 4444)
+
+	Pwd, err := os.Getwd()
 	if err != nil {
-		fmt.Println("Error starting Selenium WebDriver:", err)
+		logger.SetLogConsole(logger.LogData{
+			Message: "Error getting the IP Public",
+			CustomFields: logrus.Fields{
+				"data": err,
+			},
+			Level: "ERROR",
+		})
+		return ""
+	}
+
+	vendorDepPath := Pwd + "/selenium/vendor"
+
+	logger.SetLogConsole(logger.LogData{
+		Message: "Starting Selenium WebDriver with headless Chrome in " + vendorDepPath + "/chromedriver",
+		Level:   "INFO",
+	})
+	service, err := selenium.NewChromeDriverService(vendorDepPath+"/chromedriver", 4444)
+	if err != nil {
+		logger.SetLogConsole(logger.LogData{
+			Message: "Error starting Selenium WebDriver with headless Chrome in " + vendorDepPath + "/chromedriver",
+			CustomFields: logrus.Fields{
+				"data": err,
+			},
+			Level: "ERROR",
+		})
 		return ""
 	}
 	defer service.Stop()
@@ -69,7 +323,7 @@ func GetIPPublic() string {
 		"browserName": "chrome",
 	}
 	chromeCaps := chrome.Capabilities{
-		Path: "",
+		Path: vendorDepPath + "/chrome-linux/chrome",
 		Args: []string{
 			"--headless", // <<<
 			"--no-sandbox",
@@ -77,57 +331,105 @@ func GetIPPublic() string {
 		},
 	}
 	caps.AddChrome(chromeCaps)
-
-	fmt.Println("Connecting to the WebDriver instance running locally and start a new browser session")
+	logger.SetLogConsole(logger.LogData{
+		Message: "Connecting to the WebDriver instance running locally and start a new browser session",
+		Level:   "INFO",
+	})
 	wd, err := selenium.NewRemote(caps, "")
 	if err != nil {
-		fmt.Println("Error starting Selenium WebDriver:", err)
+		logger.SetLogConsole(logger.LogData{
+			Message: "Error connecting to the WebDriver instance running locally and start a new browser session",
+			CustomFields: logrus.Fields{
+				"data": err,
+			},
+			Level: "ERROR",
+		})
 		return ""
 	}
 	defer wd.Quit()
 	if err != nil {
-		fmt.Println("Error starting Selenium WebDriver:", err)
+		logger.SetLogConsole(logger.LogData{
+			Message: "Error closing the browser",
+			CustomFields: logrus.Fields{
+				"data": err,
+			},
+			Level: "ERROR",
+		})
 		return ""
 	}
 
 	err = loginToRouter(err, wd)
 	if err != nil {
-		fmt.Println("Error logging in to the router:", err)
+		logger.SetLogConsole(logger.LogData{
+			Message: "Error logging in to the router",
+			CustomFields: logrus.Fields{
+				"data": err,
+			},
+			Level: "ERROR",
+		})
 		return ""
 	}
 
 	wanIp, err := getWanIPAddress(wd)
 	if err != nil {
-		fmt.Println("Error getting WAN IP Address:", err)
+		logger.SetLogConsole(logger.LogData{
+			Message: "Error getting WAN IP Address",
+			CustomFields: logrus.Fields{
+				"data": err,
+			},
+			Level: "ERROR",
+		})
 		return ""
 	}
 	//check if the WAN IP Address is a public IP Address not 10.x.x.x
 	var wanIpSplit []string
 	wanIpSplit = strings.Split(wanIp, ".")
 	for wanIpSplit[0] == "10" {
-		fmt.Println("CURRENT WAN IP Address:", wanIp)
-		fmt.Println("WAN IP Address is not a public IP Address, refreshing the WAN IP Address")
+		logger.SetLogConsole(logger.LogData{
+			Message: "CURRENT WAN IP Address:" + wanIp + " is not a public IP Address, refreshing the WAN IP Address",
+			Level:   "INFO",
+		})
 		//refresh the WAN IP Address
 		err = refreshTheIpAddress(wd)
 		if err != nil {
-			fmt.Println("Error refreshing the WAN IP Address:", err)
+			logger.SetLogConsole(logger.LogData{
+				Message: "Error refreshing the WAN IP Address",
+				CustomFields: logrus.Fields{
+					"data": err,
+				},
+				Level: "ERROR",
+			})
 			return ""
 		}
 
 		//get the WAN IP Address
 		wanIp, err = getWanIPAddress(wd)
 		if err != nil {
-			fmt.Println("Error getting WAN IP Address:", err)
+			logger.SetLogConsole(logger.LogData{
+				Message: "Error getting WAN IP Address",
+				CustomFields: logrus.Fields{
+					"data": err,
+				},
+				Level: "ERROR",
+			})
 			return ""
 		}
 		wanIpSplit = strings.Split(wanIp, ".")
 	}
-
-	fmt.Println("WAN IP Address is a public IP Address:", wanIp)
+	logger.SetLogConsole(logger.LogData{
+		Message: "WAN IP Address is a public IP Address:" + wanIp,
+		Level:   "INFO",
+	})
 	//close the browser
 	err = wd.Quit()
 	if err != nil {
-		fmt.Println("Error closing the browser:", err)
+		logger.SetLogConsole(logger.LogData{
+			Message: "Error closing the browser",
+			CustomFields: logrus.Fields{
+				"data": err,
+			},
+			Level: "ERROR",
+		})
 		return ""
 	}
 	var IpSplit []string
@@ -136,7 +438,7 @@ func GetIPPublic() string {
 }
 func loginToRouter(err error, wd selenium.WebDriver) error {
 	// Navigate to the login page
-	err = wd.Get("http://192.168.1.1")
+	err = wd.Get(routerURL)
 	if err != nil {
 		return err
 	}
@@ -155,11 +457,11 @@ func loginToRouter(err error, wd selenium.WebDriver) error {
 	}
 
 	// Enter the login credentials and submit the form
-	err = username.SendKeys("admin")
+	err = username.SendKeys(routerAdmin)
 	if err != nil {
 		return err
 	}
-	err = password.SendKeys("xxxxx")
+	err = password.SendKeys(routerPassword)
 	if err != nil {
 		return err
 	}
@@ -171,12 +473,18 @@ func loginToRouter(err error, wd selenium.WebDriver) error {
 }
 
 func getWanIPAddress(wd selenium.WebDriver) (string, error) {
+	//sleep for 2 seconds
+	//time.Sleep(time.Duration(100000) * time.Second)
 	ipAdd, err := logicGetWanIPAddress(wd)
 	if err != nil {
 		return "", err
 	}
+
 	for strings.Contains(ipAdd, "0.0.0.0") {
-		fmt.Println("Waiting for WAN IP Address to be assigned")
+		logger.SetLogConsole(logger.LogData{
+			Message: "Waiting for WAN IP Address to be assigned",
+			Level:   "INFO",
+		})
 		time.Sleep(time.Duration(2) * time.Second)
 		ipAdd, err = logicGetWanIPAddress(wd)
 	}
@@ -314,12 +622,19 @@ func refreshTheIpAddress(wd selenium.WebDriver) error {
 		selectData, err = wd.FindElement(selenium.ByXPATH, "/html/body/div[3]/div[2]/div[1]/div[3]/div[2]/div[2]/div/div/div[2]/div[2]/div[2]/form/div[8]/div[4]/div/select/option[2]")
 	}
 
+	//change the value
+	err = selectData.Click()
+	if err != nil {
+		return err
+	}
+
 	//submit the form
 	submit, err := wd.FindElement(selenium.ByXPATH, "/html/body/div[3]/div[2]/div[1]/div[3]/div[2]/div[2]/div/div/div[2]/div[2]/div[2]/form/div[14]/input[2]")
 	if err != nil {
 		return err
 	}
 	err = submit.Click()
+
 	return nil
 }
 
@@ -346,39 +661,65 @@ func isSelected(wd selenium.WebDriver, typeAuth string) bool {
 }
 
 func updateDNSRecordCloudFare(IP string) {
-	apiKey := "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
-	zoneID := "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+	apiKey := apiKeyCloudFare
+	zoneID := zoneIDCloudFare
 	// retrieve a list of DNS records for the zone
 	dnsRecords, err := getDNSRecords(apiKey, zoneID)
 	if err != nil {
-		fmt.Println("Error retrieving DNS records:", err)
+		logger.SetLogConsole(logger.LogData{
+			Message: "Error retrieving DNS records",
+			CustomFields: logrus.Fields{
+				"data": err,
+			},
+			Level: "ERROR",
+		})
 		return
 	}
 	//get the DNS record where the name is "lab.kasfi-dev.tech"
-	var dnsRecord DNSRecord
 	for _, record := range dnsRecords {
-		if record.Name == "example.hostname.com" {
-			dnsRecord = record
+		if record.Name == dnsRecordNameCloudFare || record.Name == "*."+dnsRecordNameCloudFare {
+			err = checkToUpdateDnsRecordByName(IP, record, err, apiKey, zoneID)
+			if err != nil {
+				logger.SetLogConsole(logger.LogData{
+					Message: "Error checking to update DNS record",
+					CustomFields: logrus.Fields{
+						"data": err,
+					},
+					Level: "ERROR",
+				})
+				return
+			}
 		}
 	}
 
 	//check if the WAN IP Address is the same as the DNS record
 
-	if IP == dnsRecord.Content {
-		fmt.Println("WAN IP Address is the same as the DNS record (", IP, "), no need to update the DNS record")
-		return
-	}
+}
 
-	fmt.Println("WAN IP Address is not the same as the DNS record, updating the DNS record")
+func checkToUpdateDnsRecordByName(IP string, record DNSRecord, err error, apiKey string, zoneID string) error {
+	if IP == record.Content {
+		logger.SetLogConsole(logger.LogData{
+			Message: "WAN IP Address is the same as the DNS record (" + IP + "), no need to update the DNS record",
+			Level:   "INFO",
+		})
+		return nil
+	}
+	logger.SetLogConsole(logger.LogData{
+		Message: "WAN IP Address is not the same as the DNS record (" + record.Content + "), updating the DNS record " + record.Content + " and " + IP,
+		Level:   "INFO",
+	})
 	//update the DNS record
-	dnsRecord.Content = IP
-	err = updateDNSRecord(apiKey, zoneID, dnsRecord)
+	record.Content = IP
+	err = updateDNSRecord(apiKey, zoneID, record)
 	if err != nil {
-		fmt.Println("Error updating DNS record:", err)
-		return
+		return err
 	}
 
-	fmt.Println("DNS record updated successfully")
+	logger.SetLogConsole(logger.LogData{
+		Message: "DNS record updated successfully to " + IP + " for " + dnsRecordNameCloudFare,
+		Level:   "INFO",
+	})
+	return nil
 }
 
 type DNSRecord struct {
@@ -398,7 +739,7 @@ func getDNSRecords(apiKey, zoneID string) ([]DNSRecord, error) {
 	}
 
 	req.Header.Set("X-Auth-Key", apiKey)
-	req.Header.Set("X-Auth-Email", "youremail@gmail.com")
+	req.Header.Set("X-Auth-Email", emailCloudFare)
 	req.Header.Set("Content-Type", "application/json")
 
 	client := http.Client{}
@@ -438,7 +779,7 @@ func updateDNSRecord(apiKey, zoneID string, dnsRecord DNSRecord) error {
 	}
 
 	req.Header.Set("X-Auth-Key", apiKey)
-	req.Header.Set("X-Auth-Email", "youremail@gmail.com")
+	req.Header.Set("X-Auth-Email", emailCloudFare)
 	req.Header.Set("Content-Type", "application/json")
 
 	client := http.Client{}
@@ -460,6 +801,9 @@ func updateDNSRecord(apiKey, zoneID string, dnsRecord DNSRecord) error {
 	if err != nil {
 		return err
 	}
-	fmt.Println("DNS Record updated:", result.Result)
+	logger.SetLogConsole(logger.LogData{
+		Message: "DNS Record updated successfully with API cloud fare",
+		Level:   "INFO",
+	})
 	return nil
 }
